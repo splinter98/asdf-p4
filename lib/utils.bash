@@ -2,8 +2,7 @@
 
 set -euo pipefail
 
-# TODO: Ensure this is the correct GitHub homepage where releases can be downloaded for p4.
-GH_REPO="https://filehost.perforce.com/perforce/"
+P4_REPO="https://filehost.perforce.com/perforce"
 TOOL_NAME="p4"
 TOOL_TEST="p4 -V"
 
@@ -14,26 +13,27 @@ fail() {
 
 curl_opts=(-fsSL)
 
-# NOTE: You might want to remove this if p4 is not hosted on GitHub releases.
-if [ -n "${GITHUB_API_TOKEN:-}" ]; then
-	curl_opts=("${curl_opts[@]}" -H "Authorization: token $GITHUB_API_TOKEN")
-fi
-
 sort_versions() {
 	sed 'h; s/[+-]/./g; s/.p\([[:digit:]]\)/.z\1/; s/$/.z/; G; s/\n/ /' |
 		LC_ALL=C sort -t. -k 1,1 -k 2,2n -k 3,3n -k 4,4n -k 5,5n | awk '{print $2}'
 }
 
-list_github_tags() {
-	git ls-remote --tags --refs "$GH_REPO" |
-		grep -o 'refs/tags/.*' | cut -d/ -f3- |
-		sed 's/^v//' # NOTE: You might want to adapt this sed to remove non-version strings from tags
+list_p4_releases() {
+	curl -sL "${P4_REPO}" \
+		| grep -o "r[0-9]*.[0-9]*/" \
+		| sed 's/r\(.*\)\//\1/' \
+		| uniq
 }
 
+filter_available() {
+	xargs -P5 -I%% curl -sIw '%%=%{http_code}\n' -o /dev/null "${P4_REPO}/r%%/bin.linux26x86_64/${TOOL_NAME}" \
+	| sed -n 's/=200$//p'
+}
+
+
 list_all_versions() {
-	# TODO: Adapt this. By default we simply list the tag names from GitHub releases.
-	# Change this function if p4 has other means of determining installable versions.
-	list_github_tags
+	list_p4_releases \
+		| filter_available
 }
 
 download_release() {
@@ -41,8 +41,16 @@ download_release() {
 	version="$1"
 	filename="$2"
 
-	# TODO: Adapt the release URL convention for p4
-	url="$GH_REPO/archive/v${version}.tar.gz"
+	case $(uname | tr '[:upper:]' '[:lower:]') in
+	linux*)
+		local platform="linux26x86_64"
+		;;
+	*)
+		fail "Platform download not supported."
+		;;
+	esac
+
+	url="${P4_REPO}/r${version}/bin.${platform}/${TOOL_NAME}"
 
 	echo "* Downloading $TOOL_NAME release $version..."
 	curl "${curl_opts[@]}" -o "$filename" -C - "$url" || fail "Could not download $url"
@@ -61,7 +69,6 @@ install_version() {
 		mkdir -p "$install_path"
 		cp -r "$ASDF_DOWNLOAD_PATH"/* "$install_path"
 
-		# TODO: Assert p4 executable exists.
 		local tool_cmd
 		tool_cmd="$(echo "$TOOL_TEST" | cut -d' ' -f1)"
 		test -x "$install_path/$tool_cmd" || fail "Expected $install_path/$tool_cmd to be executable."
